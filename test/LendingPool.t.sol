@@ -212,15 +212,33 @@ contract LendingPoolTest is Test {
         usdc.approve(address(pool), 1000e18);
         pool.liquidate(alice, 1000);
         vm.stopPrank();
-        assertEq(pool.getHealthFactor(alice), 0.99375e18);
+        assertEq(pool.getHealthFactor(alice), 0.984250e18);
         assertEq(pool.getDebtBalance(alice), 4000);
         uint256 amount = 1000;
         uint256 collateralToSeize = amount * 1e18 / oracle.getPrice();
-        assertEq(pool.getCollateralBalance(alice), 7 ether - collateralToSeize);
+        uint256 bonusCollateral = collateralToSeize * 5 / 100;
+        uint256 totalCollateralToSeize = collateralToSeize + bonusCollateral;
+        assertEq(pool.getCollateralBalance(alice), 7 ether - totalCollateralToSeize);
         assertEq(usdc.balanceOf(bob), 0);
         assertEq(usdc.balanceOf(address(pool)), 96000e18);
-        uint256 expectedCollateralToSeize = 1000 * 1e18 / oracle.getPrice();
-        assertEq(bob.balance, expectedCollateralToSeize);
-        assertEq(address(pool).balance, 7 ether - collateralToSeize);
+        assertEq(bob.balance, totalCollateralToSeize);
+        assertEq(address(pool).balance, 7 ether - totalCollateralToSeize);
+    }
+
+    function test_HealthFactorNotImprovedRevert() public {
+        vm.startPrank(alice);
+        pool.depositCollateral{value: 7 ether}();
+        pool.borrow(5000);
+        oracle.setPrice(700);
+        vm.stopPrank();
+        usdc.mint(bob, 1000e18);
+        vm.startPrank(bob);
+        usdc.approve(address(pool), 1000e18);
+        vm.expectRevert(abi.encodeWithSelector(LendingPool.HealthFactorNotImproved.selector, 0.735e18, 0.72175e18));
+        pool.liquidate(alice, 1000);
+        vm.stopPrank();
+        assertEq(pool.getDebtBalance(alice), 5000);
+        assertEq(pool.getCollateralBalance(alice), 7 ether);
+        assertEq(usdc.balanceOf(bob), 1000e18);
     }
 }

@@ -16,11 +16,18 @@ contract LendingPool {
     error UnderCollateralizedDebt(uint256 currentDebt, uint256 maxDebtAfterWithdraw);
     error HealthFactorOk();
     error InsufficientCollateralForLiquidation(uint256 balance, uint256 liquidation);
+    error HealthFactorNotImproved(uint256 startHF, uint256 endHF);
 
     event Deposited(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
     event Borrowed(address indexed user, uint256 amount);
     event Repaid(address indexed user, uint256 amount);
+    event Liquidated(
+        address indexed liquidator,
+        address indexed user,
+        uint256 debtCovered,
+        uint256 collateralSeized
+    );
 
     IERC20 public immutable loanToken;
     IPriceOracle public immutable priceOracle;
@@ -28,6 +35,8 @@ contract LendingPool {
     uint256 public constant LTV_PRECISION = 100;
     uint256 public constant HEALTH_FACTOR_PRECISION = 1e18;
     uint256 public constant MIN_HEALTH_FACTOR = 1e18;
+    uint256 public constant LIQUIDATION_BONUS = 5;
+    uint256 public constant LIQUIDATION_PRECISION = 100;
 
     mapping(address => uint256) private collateralBalance;
     mapping(address => uint256) private debtBalance;
@@ -128,18 +137,24 @@ contract LendingPool {
     function liquidate(address user, uint256 amount) external {
         if (user == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
-        if (_getHealthFactor(user) >= MIN_HEALTH_FACTOR) revert HealthFactorOk();
+        uint256 startingHealthFactor = _getHealthFactor(user);
+        if (startingHealthFactor >= MIN_HEALTH_FACTOR) revert HealthFactorOk();
         uint256 userDebt = _getDebtBalance(user);
         if (amount > userDebt) revert LiquidationExceededDebt(amount, userDebt);
         uint256 collateralToSeize = amount * 1e18 / priceOracle.getPrice();
-        if (collateralToSeize > collateralBalance[user]) revert InsufficientCollateralForLiquidation(collateralBalance[user], collateralToSeize);
+        uint256 bonusCollateral = collateralToSeize * LIQUIDATION_BONUS / LIQUIDATION_PRECISION;
+        uint256 totalCollateralToSeize = collateralToSeize + bonusCollateral;
+        if (totalCollateralToSeize > collateralBalance[user]) revert InsufficientCollateralForLiquidation(collateralBalance[user], totalCollateralToSeize);
         uint256 tokenAmount = amount * 1e18;
         debtBalance[user] -= amount;
-        collateralBalance[user] -= collateralToSeize;
+        collateralBalance[user] -= totalCollateralToSeize;
+        uint256 endingHealthFactor = _getHealthFactor(user);
+        if (startingHealthFactor >= endingHealthFactor) revert HealthFactorNotImproved(startingHealthFactor, endingHealthFactor);
         bool transferResult = loanToken.transferFrom(msg.sender, address(this), tokenAmount);
         if (!transferResult) revert TransferFailed();
-        (bool success, ) = payable(msg.sender).call{value: collateralToSeize}("");
+        (bool success, ) = payable(msg.sender).call{value: totalCollateralToSeize}("");
         if (!success) revert TransferFailed();
+        emit Liquidated(msg.sender, user, amount, totalCollateralToSeize);
     }
 
 
