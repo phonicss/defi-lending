@@ -14,7 +14,7 @@ contract MockPriceOracle is IPriceOracle {
         price = newPrice;
     }
 
-    function getPrice() external override view returns (uint256) {
+    function getPrice() external view override returns (uint256) {
         return price;
     }
 }

@@ -12,7 +12,7 @@ contract LendingPoolTest is Test {
     address bob;
     MockUSDC usdc;
     MockPriceOracle oracle;
-    
+
     function setUp() public {
         usdc = new MockUSDC();
         oracle = new MockPriceOracle(2000);
@@ -21,7 +21,17 @@ contract LendingPoolTest is Test {
         bob = makeAddr("bob");
         vm.deal(alice, 10 ether);
         usdc.mint(address(pool), 100_000 ether);
-    }   
+    }
+
+    function test_RevertWhenLoanTokenIsZero() public {
+        vm.expectRevert(LendingPool.ZeroAddress.selector);
+        pool = new LendingPool(address(0), address(oracle));
+    }
+
+    function test_RevertWhenOracleIsZero() public {
+        vm.expectRevert(LendingPool.ZeroAddress.selector);
+        pool = new LendingPool(address(usdc), address(0));
+    }
 
     function test_DepositCollateral() public {
         vm.prank(alice);
@@ -63,7 +73,7 @@ contract LendingPoolTest is Test {
         vm.stopPrank();
     }
 
-    function test_LoanTokenIsConfigured() public view{
+    function test_LoanTokenIsConfigured() public view {
         assertEq(address(pool.loanToken()), address(usdc));
     }
 
@@ -76,7 +86,7 @@ contract LendingPoolTest is Test {
     }
 
     function test_OracleInitialPrice() public view {
-        assertEq(oracle.getPrice(), 2000); 
+        assertEq(oracle.getPrice(), 2000);
     }
 
     function test_CollateralValueIsConfigured() public {
@@ -87,7 +97,7 @@ contract LendingPoolTest is Test {
         assertEq(collateralValue, 14_000);
     }
 
-     function test_CollateralValueIsConfigured2() public {
+    function test_CollateralValueIsConfigured2() public {
         vm.startPrank(alice);
         pool.depositCollateral{value: 0.5 ether}();
         uint256 collateralValue = pool.getCollateralValue(alice);
@@ -99,23 +109,23 @@ contract LendingPoolTest is Test {
         vm.startPrank(alice);
         pool.depositCollateral{value: 7 ether}();
         vm.stopPrank();
-        assertEq(pool.getMaxBorrowAmount(alice), 10_500);
+        assertEq(pool.getMaxBorrowAmount(alice), 9_800);
     }
 
-     function test_BorrowedValueIsConfigured() public {
+    function test_BorrowedValueIsConfigured() public {
         vm.startPrank(alice);
         pool.depositCollateral{value: 7 ether}();
         pool.borrow(5000);
         vm.stopPrank();
         assertEq(pool.getDebtBalance(alice), 5_000);
-        assertEq(usdc.balanceOf(alice), 5000*1e18);
-        assertEq(usdc.balanceOf(address(pool)), 95000*1e18);
+        assertEq(usdc.balanceOf(alice), 5000 * 1e18);
+        assertEq(usdc.balanceOf(address(pool)), 95000 * 1e18);
     }
 
-     function test_RevertWhenBorrowExceedsMaxBorrow() public {
+    function test_RevertWhenBorrowExceedsMaxBorrow() public {
         vm.startPrank(alice);
         pool.depositCollateral{value: 7 ether}();
-        vm.expectRevert(abi.encodeWithSelector(LendingPool.BorrowLimitExceeded.selector, 11_000, 10_500));
+        vm.expectRevert(abi.encodeWithSelector(LendingPool.BorrowLimitExceeded.selector, 11_000, 9_800));
         pool.borrow(11000);
         vm.stopPrank();
     }
@@ -142,16 +152,16 @@ contract LendingPoolTest is Test {
         assertEq(collateralBalance, 4 ether);
         assertEq(pool.getCollateralValue(alice), 8000);
         uint256 maxDebt = pool.getMaxBorrowAmount(alice);
-        assertEq(maxDebt, 6000);
+        assertEq(maxDebt, 5600);
         assertEq(pool.getDebtBalance(alice), 5000);
         assertEq(alice.balance, 6 ether);
     }
-    
+
     function test_NotAcceptableWithdrawal() public {
         vm.startPrank(alice);
         pool.depositCollateral{value: 7 ether}();
         pool.borrow(5000);
-        vm.expectRevert(abi.encodeWithSelector(LendingPool.UnderCollateralizedDebt.selector, 5000, 3000));
+        vm.expectRevert(abi.encodeWithSelector(LendingPool.UnderCollateralizedDebt.selector, 5000, 2800));
         pool.withdrawCollateral(5 ether);
         vm.stopPrank();
         assertEq(pool.getCollateralBalance(alice), 7 ether);
@@ -182,11 +192,10 @@ contract LendingPoolTest is Test {
         assertEq(debt, 5000);
         uint256 collateralValue = pool.getCollateralValue(alice);
         assertEq(collateralValue, 6300);
-        uint256 maxDebt = pool.getMaxBorrowAmount(alice);
-        assertEq(maxDebt, 4725);
+        uint256 liquidationThresholdValue = pool.getLiquidationThresholdValue(alice);
+        assertEq(liquidationThresholdValue, 4725);
         uint256 hfAfter = pool.getHealthFactor(alice);
         assertEq(hfAfter, 0.945e18);
-
     }
 
     function test_CantLiqudateWhenHFisOkay() public {
@@ -210,14 +219,16 @@ contract LendingPoolTest is Test {
         vm.startPrank(bob);
         usdc.mint(bob, 1000e18);
         usdc.approve(address(pool), 1000e18);
-        pool.liquidate(alice, 1000);
-        vm.stopPrank();
-        assertEq(pool.getHealthFactor(alice), 0.984250e18);
-        assertEq(pool.getDebtBalance(alice), 4000);
         uint256 amount = 1000;
         uint256 collateralToSeize = amount * 1e18 / oracle.getPrice();
         uint256 bonusCollateral = collateralToSeize * 5 / 100;
         uint256 totalCollateralToSeize = collateralToSeize + bonusCollateral;
+        vm.expectEmit(true, true, false, true);
+        emit LendingPool.Liquidated(bob, alice, amount, totalCollateralToSeize);
+        pool.liquidate(alice, 1000);
+        vm.stopPrank();
+        assertEq(pool.getHealthFactor(alice), 0.98425e18);
+        assertEq(pool.getDebtBalance(alice), 4000);
         assertEq(pool.getCollateralBalance(alice), 7 ether - totalCollateralToSeize);
         assertEq(usdc.balanceOf(bob), 0);
         assertEq(usdc.balanceOf(address(pool)), 96000e18);
@@ -240,5 +251,80 @@ contract LendingPoolTest is Test {
         assertEq(pool.getDebtBalance(alice), 5000);
         assertEq(pool.getCollateralBalance(alice), 7 ether);
         assertEq(usdc.balanceOf(bob), 1000e18);
+    }
+
+    function testFuzz_DepositCollateral(uint256 amount) public {
+        amount = uint256(bound(amount, 1 wei, 100 ether));
+        vm.deal(alice, amount);
+        vm.prank(alice);
+        pool.depositCollateral{value: amount}();
+        assertEq(pool.getCollateralBalance(alice), amount);
+        assertEq(address(pool).balance, amount);
+    }
+
+    function testFuzz_Borrow(uint256 amount, uint256 borrowAmount) public {
+        amount = bound(amount, 1 ether, 100 ether);
+        vm.deal(alice, amount);
+        vm.startPrank(alice);
+        pool.depositCollateral{value: amount}();
+        uint256 maxBorrow = pool.getMaxBorrowAmount(alice);
+        uint256 poolLiquidity = usdc.balanceOf(address(pool)) / 1e18;
+        uint256 borrowLimit = maxBorrow;
+        if (poolLiquidity < maxBorrow) borrowLimit = poolLiquidity;
+        borrowAmount = bound(borrowAmount, 1, borrowLimit);
+        pool.borrow(borrowAmount);
+        vm.stopPrank();
+        assertEq(pool.getCollateralBalance(alice), amount);
+        assertEq(address(pool).balance, amount);
+        uint256 debt = pool.getDebtBalance(alice);
+        assertEq(debt, borrowAmount);
+        assertEq(usdc.balanceOf(alice), borrowAmount * 1e18);
+        assertLe(debt, maxBorrow);
+    }
+
+    function testFuzz_RevertWhenBorrowExceedsMax(uint256 amount, uint256 excess) public {
+        amount = bound(amount, 1 ether, 100 ether);
+        vm.deal(alice, amount);
+        vm.startPrank(alice);
+        pool.depositCollateral{value: amount}();
+        uint256 maxBorrow = pool.getMaxBorrowAmount(alice);
+        excess = bound(excess, 1, 10_000);
+        uint256 invalidBorrow = maxBorrow + excess;
+        vm.expectRevert(abi.encodeWithSelector(LendingPool.BorrowLimitExceeded.selector, invalidBorrow, maxBorrow));
+        pool.borrow(invalidBorrow);
+        vm.stopPrank();
+        assertEq(pool.getDebtBalance(alice), 0);
+        assertEq(usdc.balanceOf(alice), 0);
+        assertEq(pool.getCollateralBalance(alice), amount);
+    }
+
+    function test_DeepUnderwaterPositionCannotBePartiallyLiquidated() public {
+        vm.deal(alice, 7 ether);
+        vm.startPrank(alice);
+        pool.depositCollateral{value: 7 ether}();
+        oracle.setPrice(2000);
+        pool.borrow(5000);
+        oracle.setPrice(700);
+        vm.stopPrank();
+        usdc.mint(bob, 1000e18);
+        vm.startPrank(bob);
+        usdc.approve(address(pool), 1000e18);
+        vm.expectRevert(abi.encodeWithSelector(LendingPool.HealthFactorNotImproved.selector, 0.735e18, 0.72175e18));
+        pool.liquidate(alice, 1000);
+    }
+
+    function test_PositionBecomesInsolventBelowCriticalPrice() public {
+        vm.deal(alice, 7 ether);
+        vm.startPrank(alice);
+        pool.depositCollateral{value: 7 ether}();
+        oracle.setPrice(2000);
+        pool.borrow(5000);
+        oracle.setPrice(700);
+        vm.stopPrank();
+        uint256 collateralValue = pool.getCollateralValue(alice);
+        uint256 debt = pool.getDebtBalance(alice);
+        assertEq(collateralValue, 4900);
+        assertEq(debt, 5000);
+        assertLt(collateralValue, debt);
     }
 }
