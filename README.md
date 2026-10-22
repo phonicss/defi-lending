@@ -4,7 +4,7 @@ A minimal overcollateralized lending protocol built in Solidity and tested with 
 
 Users deposit native ETH as collateral and borrow an ERC-20 loan token against it. The protocol tracks collateral value, debt, loan-to-value limits, health factors, and allows third-party liquidators to liquidate unhealthy positions.
 
-The project focuses on lending mechanics, liquidation design, protocol accounting, and stateful invariant testing rather than production deployment.
+The project focuses on lending mechanics, liquidation design, protocol accounting, economic edge cases, and stateful invariant testing.
 
 > **Educational project only. Not audited and not intended for production use.**
 
@@ -27,6 +27,9 @@ The project focuses on lending mechanics, liquidation design, protocol accountin
 - Unit tests
 - Fuzz tests
 - Stateful invariant tests
+- Foundry deployment script
+- Ethereum Sepolia deployment
+- Source verification through Sourcify
 
 ## Architecture
 
@@ -50,9 +53,9 @@ The protocol consists of a small set of components:
                   └──────────────────┘
                            ▲
                            │
-                    ┌──────┴──────┐
-                    │ Liquidator  │
-                    └─────────────┘
+                     ┌─────┴──────┐
+                     │ Liquidator │
+                     └────────────┘
 ```
 
 ### LendingPool
@@ -71,11 +74,11 @@ The protocol consists of a small set of components:
 
 `IPriceOracle` abstracts ETH/USD price retrieval.
 
-The test environment uses `MockPriceOracle`, allowing the ETH price to be changed during tests to simulate market movements and liquidation scenarios.
+The current implementation uses `MockPriceOracle`, allowing the ETH price to be changed during testing to simulate market movements and liquidation scenarios.
 
 ### Loan Token
 
-The test environment uses `MockUSDC`.
+The project uses `MockUSDC` as the ERC-20 loan asset.
 
 For simplicity, the current protocol assumes that the loan token uses 18 decimals.
 
@@ -154,6 +157,33 @@ $4,725 / $5,000 = 0.945
 ```
 
 The position can therefore be liquidated.
+
+### Integer Precision
+
+The protocol uses integer arithmetic.
+
+For small positions, intermediate division can truncate fractional values.
+
+For example:
+
+```text
+Collateral value: $10
+Liquidation threshold: 75%
+
+10 × 75 / 100 = 7
+```
+
+Because Solidity integer division truncates the fractional part, the intermediate result is `7` rather than `7.5`.
+
+With a debt of `5`:
+
+```text
+healthFactor = 7 / 5 = 1.4
+```
+
+rather than the mathematical value of `1.5`.
+
+This is an intentional limitation of the current MVP implementation and would require higher-precision fixed-point accounting in a production protocol.
 
 ## Liquidation
 
@@ -234,7 +264,7 @@ $100 → $150
 
 The protocol therefore rejects a liquidation when the borrower's health factor does not improve.
 
-### Liquidation limitation
+### Liquidation Limitation
 
 The health-factor improvement condition also creates a region where a position may still have enough collateral to cover its nominal debt but cannot be partially liquidated economically with the fixed 5% bonus.
 
@@ -271,6 +301,50 @@ ETH < $714.29
 ```
 
 A production lending protocol would require a more complete bad-debt and liquidation mechanism.
+
+## Sepolia Deployment
+
+The protocol has been deployed and tested on Ethereum Sepolia.
+
+| Contract | Address |
+|---|---|
+| LendingPool | `0x6002e329aE341e3024e68B846Bc2a9fCbDE43698` |
+| MockUSDC | `0x2e5865830C7E90fed383eBd5ae5AaFFA8F4f322A` |
+| MockPriceOracle | `0xd3F283c91c99a148e1B5F2787877800645813B73` |
+
+All three deployed contracts are source-verified through Sourcify.
+
+The deployment script initializes:
+
+```text
+MockPriceOracle price = $1,000 / ETH
+LendingPool liquidity = 100,000 mUSDC
+```
+
+### On-chain Smoke Test
+
+A complete lending lifecycle was successfully executed against the deployed Sepolia contracts.
+
+```text
+Deposit 0.01 ETH
+        ↓
+Borrow 5 mUSDC
+        ↓
+Approve 5 mUSDC
+        ↓
+Repay 5 mUSDC
+        ↓
+Withdraw 0.01 ETH
+```
+
+The position was closed successfully with:
+
+```text
+Debt       = 0
+Collateral = 0
+```
+
+This verifies the core deposit → borrow → repay → withdraw lifecycle against the deployed contracts.
 
 ## Testing
 
@@ -331,7 +405,7 @@ The invariant suite executes large randomized state-transition sequences rather 
 
 Two core accounting invariants are checked.
 
-### Invariant 1 — Ghost accounting
+### Invariant 1 — Ghost Accounting
 
 ```text
 totalDeposited
@@ -341,7 +415,7 @@ totalDeposited
 actual ETH balance of LendingPool
 ```
 
-### Invariant 2 — User accounting
+### Invariant 2 — User Accounting
 
 ```text
 sum(collateralBalance[user])
@@ -384,13 +458,14 @@ It does **not** implement all requirements of a production lending protocol.
 
 Known limitations include:
 
-- Mock price oracle in tests
+- mock price oracle
 - no oracle freshness validation
 - no protection against oracle manipulation
 - no explicit zero-price oracle validation
 - single native ETH collateral asset
 - single loan asset
 - fixed 18-decimal assumption for the loan token
+- integer division can introduce rounding/truncation in collateral and health-factor calculations, especially for small positions
 - no interest-rate model
 - no interest accrual
 - no liquidity-provider share accounting
@@ -399,7 +474,6 @@ Known limitations include:
 - no bad-debt resolution mechanism
 - no governance
 - no emergency pause mechanism
-- no production deployment configuration
 - no external security audit
 
 Deeply undercollateralized positions may become impossible to liquidate through the current health-factor-improvement rule. A production protocol would require an explicit insolvency-resolution mechanism.
@@ -409,26 +483,29 @@ Deeply undercollateralized positions may become impossible to liquidate through 
 - Solidity
 - Foundry
 - OpenZeppelin Contracts
+- Ethereum Sepolia
+- Sourcify
 
 ## Project Structure
 
 ```text
 src/
 ├── LendingPool.sol
-└── interfaces/
-    └── IPriceOracle.sol
+├── interfaces/
+│   └── IPriceOracle.sol
+└── mocks/
+    ├── MockPriceOracle.sol
+    └── MockUSDC.sol
+
+script/
+└── DeployLendingPool.s.sol
 
 test/
 ├── LendingPool.t.sol
-├── mocks/
-│   ├── MockUSDC.sol
-│   └── MockPriceOracle.sol
 └── invariant/
     ├── Handler.t.sol
     └── LendingPoolInvariant.t.sol
 ```
-
-The exact test-directory filenames may vary depending on the local project layout.
 
 ## Installation
 
@@ -457,6 +534,25 @@ Run tests:
 forge test
 ```
 
+## Deployment
+
+The project includes a Foundry deployment script:
+
+```text
+script/DeployLendingPool.s.sol
+```
+
+The script deploys:
+
+1. `MockUSDC`
+2. `MockPriceOracle`
+3. `LendingPool`
+4. initial mock-token liquidity for the lending pool
+
+Deployment requires an Ethereum RPC endpoint and a funded deployment account.
+
+Private keys should not be stored directly in the repository or committed to version control.
+
 ## What I Learned
 
 This project was built to understand lending protocols beyond basic Solidity syntax.
@@ -471,6 +567,10 @@ Key areas explored:
 - insolvency and bad debt
 - ERC-20 interaction with `SafeERC20`
 - reentrancy protection
+- Solidity integer arithmetic and precision
+- Foundry deployment
+- testnet interaction with `cast`
+- contract source verification
 - Foundry unit testing
 - fuzz testing
 - stateful invariant testing
@@ -478,6 +578,8 @@ Key areas explored:
 - economic edge cases in liquidation design
 
 One of the most important findings was that a liquidation function can be technically correct while still creating undesirable economic behavior. A fixed liquidation bonus can worsen bad debt when a position becomes sufficiently undercollateralized, which makes insolvency handling a protocol-design problem rather than only a Solidity implementation problem.
+
+The Sepolia deployment also demonstrated the importance of validating protocol behavior outside the local test environment, including deployment configuration, token approvals, borrowing, repayment, collateral withdrawal, and integer-precision effects.
 
 ## Disclaimer
 
