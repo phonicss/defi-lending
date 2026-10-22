@@ -15,7 +15,6 @@ contract DeployLendingPool is Script {
         LendingPool pool = new LendingPool(address(token), address(oracle));
 
         token.mint(address(pool), 100_000 * 1e18);
-        
 
         vm.stopBroadcast();
     }
